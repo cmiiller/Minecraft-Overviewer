@@ -165,6 +165,20 @@ except Exception:
     if not os.path.exists(pil_include[0]):
         pil_include = [ ]
 
+if os.environ.has_key('LDB_INCLUDE_DIR'):
+    leveldb_include = os.environ['LDB_INCLUDE_DIR'].split(os.pathsep)
+    leveldb_defines = [('DLLX', ''), ('SUPPORT_BEDROCK', '')]
+else:
+    leveldb_include = [ ]
+    leveldb_defines = [ ]
+
+if os.environ.has_key('LDB_LIB_DIR'):
+    leveldb_lib_path = os.environ['LDB_LIB_DIR']
+    #fixme: why do I need to copy this from the out-shared path to one path up
+    #fixme: why can't I use the library_dirs or runtime_library_dirs options to make this work?
+    leveldb_library = [ os.path.join(leveldb_lib_path, 'libleveldb.dylib.1') ] 
+else:
+    leveldb_library = [ ]
 
 # used to figure out what files to compile
 # auto-created from files in primitives/, but we need the raw names so
@@ -178,12 +192,13 @@ for name in glob.glob("overviewer_core/src/primitives/*.c"):
 c_overviewer_files = ['main.c', 'composite.c', 'iterate.c', 'endian.c', 'rendermodes.c']
 c_overviewer_files += map(lambda mode: 'primitives/%s.c' % (mode,), primitives)
 c_overviewer_files += ['Draw.c']
+c_overviewer_files += ['leveldb.cc']
 c_overviewer_includes = ['overviewer.h', 'rendermodes.h']
 
 c_overviewer_files = map(lambda s: 'overviewer_core/src/'+s, c_overviewer_files)
 c_overviewer_includes = map(lambda s: 'overviewer_core/src/'+s, c_overviewer_includes)
 
-setup_kwargs['ext_modules'].append(Extension('overviewer_core.c_overviewer', c_overviewer_files, include_dirs=['.', numpy_include] + pil_include, depends=c_overviewer_includes, extra_link_args=[]))
+setup_kwargs['ext_modules'].append(Extension('overviewer_core.c_overviewer', c_overviewer_files, include_dirs=['.', numpy_include] + pil_include + leveldb_include, depends=c_overviewer_includes, define_macros=leveldb_defines, extra_link_args=[], extra_objects=leveldb_library))
 
 
 # tell build_ext to build the extension in-place

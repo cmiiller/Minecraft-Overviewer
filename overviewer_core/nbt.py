@@ -17,6 +17,7 @@ import gzip, zlib
 import struct
 import StringIO
 import functools
+from enum import Enum
 
 # decorator that turns the first argument from a string into an open file
 # handle
@@ -30,17 +31,20 @@ def _file_loader(func):
     return wrapper
 
 @_file_loader
-def load(fileobj):
+def load(fileobj, nbt_format): 
     """Reads in the given file as NBT format, parses it, and returns the
-    result as a (name, data) tuple.    
+    result as a (name, data) tuple.
     """
-    return NBTFileReader(fileobj).read_all()
+    return NBTReader(fileobj, nbt_format).read_all()
 
 @_file_loader
 def load_region(fileobj):
     """Reads in the given file as a MCR region, and returns an object
     for accessing the chunks inside."""
     return MCRFileReader(fileobj)
+
+def load_from_string(string, element_count):
+    return NBTReader(string, NBTFormat.string).read_n(element_count)
 
 
 class CorruptionError(Exception):
@@ -57,32 +61,68 @@ class CorruptNBTError(CorruptionError):
     something unexpected in an NBT file."""
     pass
 
-class NBTFileReader(object):
+class NBTFormat(Enum):
+    zlib = 0
+    gzip = 1
+    bedrock_level_dat = 2
+    string = 3
+
+class UnknownNBTFormat(Exception):
+    pass    
+
+class NBTEndianness(Enum):
+    big = 0,
+    little = 1
+
+class NBTReader(object):
     """Low level class that reads the Named Binary Tag format used by Minecraft
 
     """
-    
-    # compile the unpacker's into a classes
-    _byte   = struct.Struct("b")
-    _short  = struct.Struct(">h")
-    _ushort = struct.Struct(">H")
-    _int    = struct.Struct(">i")
-    _uint   = struct.Struct(">I")
-    _long   = struct.Struct(">q")
-    _float  = struct.Struct(">f")
-    _double = struct.Struct(">d") 
  
-    def __init__(self, fileobj, is_gzip=True):
+    def __init__(self, data, nbt_format):
         """Create a NBT parsing object with the given file-like
         object. Setting is_gzip to False parses the file as a zlib
         stream instead."""
-        if is_gzip:
-            self._file = gzip.GzipFile(fileobj=fileobj, mode='rb')
-        else:
+
+        self._endianness = NBTEndianness.big
+
+        if nbt_format == NBTFormat.gzip:
+            self._file = gzip.GzipFile(fileobj=data, mode='rb')
+        elif nbt_format == NBTFormat.zlib:
             # pure zlib stream -- maybe later replace this with
             # a custom zlib file object?
-            data = zlib.decompress(fileobj.read())
+            data = zlib.decompress(data.read())
             self._file = StringIO.StringIO(data)
+        elif nbt_format == NBTFormat.bedrock_level_dat:
+            self._file = StringIO.StringIO(data.read())
+            self._endianness = NBTEndianness.little
+        elif nbt_format == NBTFormat.string:
+            self._file = StringIO.StringIO(data)
+            self._endianness = NBTEndianness.little
+        else:
+            raise UnknownNBTFormat()
+
+        self._nbt_format = nbt_format
+
+            # compile the unpacker's into a classes
+        if (self._endianness == NBTEndianness.big):
+            self._byte   = struct.Struct("b")
+            self._short  = struct.Struct(">h")
+            self._ushort = struct.Struct(">H")
+            self._int    = struct.Struct(">i")
+            self._uint   = struct.Struct(">I")
+            self._long   = struct.Struct(">q")
+            self._float  = struct.Struct(">f")
+            self._double = struct.Struct(">d") 
+        else:
+            self._byte   = struct.Struct("b")
+            self._short  = struct.Struct("<h")
+            self._ushort = struct.Struct("<H")
+            self._int    = struct.Struct("<i")
+            self._uint   = struct.Struct("<I")
+            self._long   = struct.Struct("<q")
+            self._float  = struct.Struct("<f")
+            self._double = struct.Struct("<d")          
 
         # mapping of NBT type ids to functions to read them out
         self._read_tagmap = {
@@ -186,7 +226,12 @@ class NBTFileReader(object):
         """
         # Read tag type
         try:
+            if (self._nbt_format == NBTFormat.bedrock_level_dat):
+                version = self._read_tag_int()
+                file_length = self._read_tag_int()
+
             tagtype = ord(self._file.read(1))
+
             if tagtype != 10:
                 raise Exception("Expected a tag compound")
             
@@ -195,6 +240,25 @@ class NBTFileReader(object):
             payload = self._read_tag_compound()
             
             return (name, payload)
+
+        except (struct.error, ValueError, TypeError), e:
+            raise CorruptNBTError("could not parse nbt: %s" % (str(e),))
+
+    def read_n(self, element_count):
+        """Reads the specified count of elements
+        """
+        # Read tag type
+        try:
+            l = []
+            for _ in range (0, element_count):
+                tagtype = ord(self._file.read(1))
+                _ = self._file.read(2)
+
+                read_method = self._read_tagmap[tagtype]
+                l.append(read_method())
+            
+            return l
+
         except (struct.error, ValueError, TypeError), e:
             raise CorruptNBTError("could not parse nbt: %s" % (str(e),))
 
@@ -308,7 +372,7 @@ class MCRFileReader(object):
         data = StringIO.StringIO(data)
         
         try:
-            return NBTFileReader(data, is_gzip=is_gzip).read_all()
+            return NBTReader(data, NBTFormat.gzip if is_gzip else NBTFormat.zlib).read_all()
         except CorruptionError:
             raise
         except Exception, e:

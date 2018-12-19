@@ -44,6 +44,9 @@
 
 /* like (a * b + 127) / 255), but much faster on most platforms
    from PIL's _imaging.c */
+#if defined(MULDIV255)
+#undef MULDIV255
+#endif
 #define MULDIV255(a, b, tmp)								\
 	(tmp = (a) * (b) + 128, ((((tmp) >> 8) + (tmp)) >> 8))
 
@@ -242,5 +245,13 @@ static inline unsigned int get_data(RenderState *state, DataType type, int x, in
 void init_endian(void);
 unsigned short big_endian_ushort(unsigned short in);
 unsigned int big_endian_uint(unsigned int in);
+
+#if defined(SUPPORT_BEDROCK)
+/* in leveldb.cc */
+PyObject* leveldb_open(PyObject *dest, PyObject *src);
+PyObject* leveldb_close(PyObject *dest, PyObject *src);
+PyObject* leveldb_get_chunk_keys(PyObject *dest, PyObject *src);
+PyObject* leveldb_get_chunk_data(PyObject *dest, PyObject *src);
+#endif
 
 #endif /* __OVERVIEWER_H_INCLUDED__ */

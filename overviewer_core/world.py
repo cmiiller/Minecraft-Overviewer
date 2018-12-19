@@ -21,11 +21,14 @@ import time
 import random
 import re
 import locale
+import c_overviewer
 
 import numpy
+from bitarray import bitarray
 
 from . import nbt
 from . import cache
+from enum import Enum
 
 """
 This module has routines for extracting information about available worlds
@@ -39,6 +42,9 @@ class ChunkDoesntExist(Exception):
 class UnsupportedVersion(Exception):
     pass
 
+class Edition(Enum):
+    java = 0
+    bedrock = 1
 
 def log_other_exceptions(func):
     """A decorator that prints out any errors that are not
@@ -98,51 +104,67 @@ class World(object):
         if not os.path.exists(os.path.join(self.worlddir, "level.dat")):
             raise ValueError("level.dat not found in %s" % self.worlddir)
 
-        data = nbt.load(os.path.join(self.worlddir, "level.dat"))[1]['Data']
-        # it seems that reading a level.dat file is unstable, particularly with respect
-        # to the spawnX,Y,Z variables.  So we'll try a few times to get a good reading
-        # empirically, it seems that 0,50,0 is a "bad" reading
-        # update: 0,50,0 is the default spawn, and may be valid is some cases
-        # more info is needed
-        data = nbt.load(os.path.join(self.worlddir, "level.dat"))[1]['Data']
+        # check worlddir and determine if it is a Java or Bedrock world
+        if os.path.exists(os.path.join(self.worlddir, "db")):
+            self.edition = Edition.bedrock
+        else:
+            self.edition = Edition.java
 
+        # level.dat file format is different between Java and Bedrock
+        if self.edition == Edition.java:
+            data = nbt.load(os.path.join(self.worlddir, "level.dat"), nbt.NBTFormat.gzip)[1]['Data']
+            # it seems that reading a level.dat file is unstable, particularly with respect
+            # to the spawnX,Y,Z variables.  So we'll try a few times to get a good reading
+            # empirically, it seems that 0,50,0 is a "bad" reading
+            # update: 0,50,0 is the default spawn, and may be valid is some cases
+            # more info is needed
+            data = nbt.load(os.path.join(self.worlddir, "level.dat"), nbt.NBTFormat.gzip)[1]['Data']
 
-        # Hard-code this to only work with format version 19133, "Anvil"
-        if not ('version' in data and data['version'] == 19133):
-            if 'version' in data and data['version'] == 0:
-                logging.debug("Note: Allowing a version of zero in level.dat!")
-                ## XXX temporary fix for #1194
-            else:
-                raise UnsupportedVersion(
-                    ("Sorry, This version of Minecraft-Overviewer only works "
-                     "with the 'Anvil' chunk format\n"
-                     "World at %s is not compatible with Overviewer")
-                    % self.worlddir)
+            # Hard-code this to only work with format version 19133, "Anvil"
+            if not ('version' in data and data['version'] == 19133):
+                if 'version' in data and data['version'] == 0:
+                    logging.debug("Note: Allowing a version of zero in level.dat!")
+                    ## XXX temporary fix for #1194
+                else:
+                    raise UnsupportedVersion(
+                        ("Sorry, This version of Minecraft-Overviewer only works "
+                        "with the 'Anvil' chunk format\n"
+                        "World at %s is not compatible with Overviewer")
+                        % self.worlddir)
+
+            # Scan worlddir to try to identify all region sets. Since different
+            # server mods like to arrange regions differently and there does not
+            # seem to be any set standard on what dimensions are in each world,
+            # just scan the directory heirarchy to find a directory with .mca
+            # files.
+            for root, _, files in os.walk(self.worlddir, followlinks=True):
+                # any .mcr files in this directory?
+                mcas = [x for x in files if x.endswith(".mca")]
+                if mcas:
+                    # construct a regionset object for this
+                    rel = os.path.relpath(root, self.worlddir)
+                    rset = RegionSet(root, rel)
+                    if root == os.path.join(self.worlddir, "region"):
+                        self.regionsets.insert(0, rset)
+                    else:
+                        self.regionsets.append(rset)
+
+        elif self.edition == Edition.bedrock:
+            data = nbt.load(os.path.join(self.worlddir, "level.dat"), nbt.NBTFormat.bedrock_level_dat)[1]
+            leveldb_path = os.path.join(self.worlddir, "db")
+            logging.info("Using %s as leveldb path" % leveldb_path)
+            leveldb_handle = c_overviewer.leveldb_open(leveldb_path)
+            #todo: split out dimensions so they can do in different regionsets
+            leveldb_chunks = c_overviewer.leveldb_get_chunk_keys(leveldb_handle)
+            self.regionsets.append(BedrockRegionSet(leveldb_handle, leveldb_chunks))
+
+        else:
+            raise UnsupportedVersion("")
 
         # This isn't much data, around 15 keys and values for vanilla worlds.
         self.leveldat = data
 
-
-        # Scan worlddir to try to identify all region sets. Since different
-        # server mods like to arrange regions differently and there does not
-        # seem to be any set standard on what dimensions are in each world,
-        # just scan the directory heirarchy to find a directory with .mca
-        # files.
-        for root, dirs, files in os.walk(self.worlddir, followlinks=True):
-            # any .mcr files in this directory?
-            mcas = [x for x in files if x.endswith(".mca")]
-            if mcas:
-                # construct a regionset object for this
-                rel = os.path.relpath(root, self.worlddir)
-                rset = RegionSet(root, rel)
-                if root == os.path.join(self.worlddir, "region"):
-                    self.regionsets.insert(0, rset)
-                else:
-                    self.regionsets.append(rset)
-
         # TODO move a lot of the following code into the RegionSet
-
-
         try:
             # level.dat should have the LevelName attribute so we'll use that
             self.name = data['LevelName']
@@ -174,8 +196,8 @@ class World(object):
 
     def get_level_dat_data(self):
         # Return a copy
-        return dict(self.data)
-
+        return dict(self.leveldat)
+      
     def find_true_spawn(self):
         """Returns the spawn point for this world. Since there is one spawn
         point for a world across all dimensions (RegionSets), this method makes
@@ -1217,6 +1239,49 @@ class RegionSet(object):
                     logging.warning("Holy shit what is up with region file %s !?" % f)
                 yield (x, y, os.path.join(self.regiondir, f))
 
+class BedrockRegionSet(object):
+    def __init__(self, leveldb_handle, leveldb_chunks):
+        self.leveldb_handle = leveldb_handle
+        self.leveldb_chunks = leveldb_chunks
+
+    def get_type(self):
+        return None
+
+    #@log_other_exceptions
+    def get_chunk(self, x, z):
+        #try:
+            key_data = self.leveldb_chunks["%d,%d" % (x, z)]
+            chunk = c_overviewer.leveldb_get_chunk_data(self.leveldb_handle, x, z, key_data['_version'])
+            for section in chunk['Sections']:
+                nbt_data = nbt.load_from_string(section["_blockinfo"], section["_blockinfo_length"])
+                block_data = section["_blockdata"]
+                raw_block_data = section["_raw_blockdata"]
+                bits_per_block = section["_bitsPerBlock"]
+                if bits_per_block == 3:
+                    raw = bitarray(endian='little')
+                    raw.frombytes(raw_block_data)
+                    x = raw.decode({ 
+                        '0': bitarray('000'), '1': bitarray('001'), '2': bitarray('010'), '3': bitarray('011'),
+                        '4': bitarray('100'), '5': bitarray('101'), '6': bitarray('110'), '7': bitarray('111') 
+                    })
+                    i = x.index('1')
+                    y = raw.length()
+                    
+
+            return chunk
+        #except Exception:
+        #    raise ChunkDoesntExist("Chunk %s,%s could not be loaded: %s", (x, z, Exception.message))
+
+    def iterate_chunks(self):
+        for _, value in self.leveldb_chunks.iteritems():
+            yield value['x'], value['z'], None
+        
+    def iterate_newer_chunks(self, filemtime):
+        return self.iterate_chunks()
+
+    def get_chunk_mtime(self, x, z):
+        return None
+
 class RegionSetWrapper(object):
     """This is the base class for all "wrappers" of RegionSet objects. A
     wrapper is an object that acts similarly to a subclass: some methods are
@@ -1461,7 +1526,7 @@ def get_worlds():
             world_dat = os.path.join(world_path, "level.dat")
             if not os.path.exists(world_dat): continue
             try:
-                info = nbt.load(world_dat)[1]
+                info = nbt.load(world_dat, nbt.NBTFormat.gzip)[1] #fixme: handle bedrock
                 info['Data']['path'] = os.path.join(save_dir, dir).decode(loc)
                 if 'LevelName' in info['Data'].keys():
                     ret[info['Data']['LevelName']] = info['Data']
@@ -1477,7 +1542,7 @@ def get_worlds():
         if not os.path.exists(world_dat): continue
         world_path = os.path.join(".", dir)
         try:
-            info = nbt.load(world_dat)[1]
+            info = nbt.load(world_dat, nbt.NBTFormat.gzip)[1] #fixme: handle bedrock
             info['Data']['path'] = world_path.decode(loc)
             if 'LevelName' in info['Data'].keys():
                 ret[info['Data']['LevelName']] = info['Data']

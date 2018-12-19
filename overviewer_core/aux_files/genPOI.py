@@ -304,7 +304,7 @@ def handlePlayers(worldpath, filters, markers):
 
     for playerfile in playerfiles:
         try:
-            data = PlayerDict(nbt.load(os.path.join(playerdir, playerfile))[1])
+            data = PlayerDict(nbt.load(os.path.join(playerdir, playerfile), nbt.NBTFormat.gzip)[1])
             data.use_uuid = useUUIDs
             if isSinglePlayer:
                 data = data['Data']['Player']

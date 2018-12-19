@@ -34,6 +34,20 @@ static PyMethodDef COverviewerMethods[] = {
     
     {"extension_version", get_extension_version, METH_VARARGS, 
         "Returns the extension version"},
+
+#if defined(SUPPORT_BEDROCK)
+    {"leveldb_open", leveldb_open, METH_VARARGS,
+        "Open a levelDB database"},
+
+    {"leveldb_close", leveldb_close, METH_VARARGS,
+        "Close a levelDB database, releasing its resources"},
+
+    {"leveldb_get_chunk_keys", leveldb_get_chunk_keys, METH_VARARGS,
+        "Extract all chunks from an open levelDB database"},
+
+    {"leveldb_get_chunk_data", leveldb_get_chunk_data, METH_VARARGS,
+        "Get all data for a specified chunk"},
+#endif
     
     {NULL, NULL, 0, NULL}       /* Sentinel */
 };

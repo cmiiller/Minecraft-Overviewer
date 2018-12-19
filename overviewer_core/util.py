@@ -103,6 +103,7 @@ def nice_exit(ret=0):
         print
         print "Press [Enter] to close this window."
         raw_input()
+
     sys.exit(ret)
 
 # http://docs.python.org/library/itertools.html
@@ -267,7 +268,7 @@ class OrderedDict(dict):
         for k in self:
             yield (k, self[k])
 
-    def update(*args, **kwds):
+    def update(*args, **kwds): #pylint: disable=E0211
         '''od.update(E, **F) -> None.  Update od from dict/iterable E and F.
 
         If E is a dict instance, does:           for k in E: od[k] = E[k]
